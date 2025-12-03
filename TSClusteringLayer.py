@@ -6,7 +6,7 @@ Time Series Clustering layer
 """
 
 from keras import backend as K
-from keras import layers
+from keras import layers, ops
 
 
 class TSClusteringLayer(layers.Layer):
@@ -59,25 +59,28 @@ class TSClusteringLayer(layers.Layer):
             q: soft labels for each sample. shape=(n_samples, n_clusters)
         """
         if self.dist_metric == 'eucl':
-            distance = K.sum(K.sqrt(K.sum(K.square(K.expand_dims(inputs, axis=1) - self.clusters), axis=2)), axis=-1)
+            distance = ops.sum(
+                ops.sqrt(ops.sum(ops.square(ops.expand_dims(inputs, axis=1) - self.clusters), axis=2)),
+                axis=-1,
+            )
         elif self.dist_metric == 'cid':
-            ce_x = K.sqrt(K.sum(K.square(inputs[:, 1:, :] - inputs[:, :-1, :]), axis=1))  # shape (n_samples, n_features)
-            ce_w = K.sqrt(K.sum(K.square(self.clusters[:, 1:, :] - self.clusters[:, :-1, :]), axis=1))  # shape (n_clusters, n_features)
-            ce = K.maximum(K.expand_dims(ce_x, axis=1), ce_w) / K.minimum(K.expand_dims(ce_x, axis=1), ce_w)  # shape (n_samples, n_clusters, n_features)
-            ed = K.sqrt(K.sum(K.square(K.expand_dims(inputs, axis=1) - self.clusters), axis=2))  # shape (n_samples, n_clusters, n_features)
-            distance = K.sum(ed * ce, axis=-1)  # shape (n_samples, n_clusters)
+            ce_x = ops.sqrt(ops.sum(ops.square(inputs[:, 1:, :] - inputs[:, :-1, :]), axis=1))  # shape (n_samples, n_features)
+            ce_w = ops.sqrt(ops.sum(ops.square(self.clusters[:, 1:, :] - self.clusters[:, :-1, :]), axis=1))  # shape (n_clusters, n_features)
+            ce = ops.maximum(ops.expand_dims(ce_x, axis=1), ce_w) / ops.minimum(ops.expand_dims(ce_x, axis=1), ce_w)  # shape (n_samples, n_clusters, n_features)
+            ed = ops.sqrt(ops.sum(ops.square(ops.expand_dims(inputs, axis=1) - self.clusters), axis=2))  # shape (n_samples, n_clusters, n_features)
+            distance = ops.sum(ed * ce, axis=-1)  # shape (n_samples, n_clusters)
         elif self.dist_metric == 'cor':
-            inputs_norm = (inputs - K.expand_dims(K.mean(inputs, axis=1), axis=1)) / K.expand_dims(K.std(inputs, axis=1), axis=1)  # shape (n_samples, timesteps, n_features)
-            clusters_norm = (self.clusters - K.expand_dims(K.mean(self.clusters, axis=1), axis=1)) / K.expand_dims(K.std(self.clusters, axis=1), axis=1)  # shape (n_clusters, timesteps, n_features)
-            pcc = K.mean(K.expand_dims(inputs_norm, axis=1) * clusters_norm, axis=2)  # Pearson correlation coefficients
-            distance = K.sum(K.sqrt(2.0 * (1.0 - pcc)), axis=-1)  # correlation-based similarities, shape (n_samples, n_clusters)
+            inputs_norm = (inputs - ops.expand_dims(ops.mean(inputs, axis=1), axis=1)) / ops.expand_dims(ops.std(inputs, axis=1), axis=1)  # shape (n_samples, timesteps, n_features)
+            clusters_norm = (self.clusters - ops.expand_dims(ops.mean(self.clusters, axis=1), axis=1)) / ops.expand_dims(ops.std(self.clusters, axis=1), axis=1)  # shape (n_clusters, timesteps, n_features)
+            pcc = ops.mean(ops.expand_dims(inputs_norm, axis=1) * clusters_norm, axis=2)  # Pearson correlation coefficients
+            distance = ops.sum(ops.sqrt(2.0 * (1.0 - pcc)), axis=-1)  # correlation-based similarities, shape (n_samples, n_clusters)
         elif self.dist_metric == 'acf':
             raise NotImplementedError
         else:
             raise ValueError('Available distances are eucl, cid, cor and acf!')
-        q = 1.0 / (1.0 + K.square(distance) / self.alpha)
+        q = 1.0 / (1.0 + ops.square(distance) / self.alpha)
         q **= (self.alpha + 1.0) / 2.0
-        q = K.transpose(K.transpose(q) / K.sum(q, axis=1))
+        q /= ops.sum(q, axis=1, keepdims=True)
         return q
 
     def compute_output_shape(self, input_shape):
