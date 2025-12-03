@@ -1,12 +1,16 @@
 import os
+from io import StringIO
 from time import time
 from typing import Tuple
 
 import numpy as np
+import pandas as pd
 import streamlit as st
+import altair as alt
 
 from DeepTemporalClustering import DTC
 from datasets import all_ucr_datasets, load_data
+from sklearn.decomposition import PCA
 
 
 @st.cache_data(show_spinner=False)
@@ -15,7 +19,46 @@ def load_dataset(dataset_name: str) -> Tuple[np.ndarray, np.ndarray]:
     return load_data(dataset_name)
 
 
-def run_training(dataset_name: str,
+@st.cache_data(show_spinner=False)
+def load_uploaded_dataframe(file_bytes: bytes) -> pd.DataFrame:
+    """Read an uploaded CSV file into a DataFrame and cache the result."""
+    return pd.read_csv(StringIO(file_bytes.decode("utf-8")))
+
+
+def prepare_uploaded_dataset(
+    df: pd.DataFrame, feature_columns: Tuple[str, ...], label_column: str | None
+) -> Tuple[np.ndarray, np.ndarray | None]:
+    """Convert a DataFrame into model-ready arrays."""
+
+    feature_values = df.loc[:, feature_columns].to_numpy(dtype=np.float32)
+    X = np.expand_dims(feature_values, -1)
+
+    if label_column:
+        y = df[label_column].to_numpy()
+    else:
+        y = None
+
+    return X, y
+
+
+def project_features_to_2d(flattened_features: np.ndarray) -> np.ndarray:
+    """Project latent features to two dimensions using PCA with safe fallbacks."""
+
+    if flattened_features.shape[0] < 2:
+        padded = np.pad(flattened_features, ((0, 0), (0, max(0, 2 - flattened_features.shape[1]))))
+        return padded[:, :2]
+
+    n_components = min(2, flattened_features.shape[1], flattened_features.shape[0])
+    projected = PCA(n_components=n_components).fit_transform(flattened_features)
+
+    if projected.shape[1] == 1:
+        projected = np.concatenate([projected, np.zeros((projected.shape[0], 1))], axis=1)
+
+    return projected[:, :2]
+
+
+def run_training(X_train: np.ndarray,
+                y_train: np.ndarray | None,
                 n_clusters: int,
                 n_filters: int,
                 kernel_size: int,
@@ -40,9 +83,6 @@ def run_training(dataset_name: str,
                 save_dir: str):
     """Train a DTC model with the provided hyperparameters."""
     os.makedirs(save_dir, exist_ok=True)
-
-    st.info("Loading dataset…")
-    X_train, y_train = load_dataset(dataset_name)
 
     if n_clusters is None:
         n_clusters = len(np.unique(y_train))
@@ -111,26 +151,73 @@ def run_training(dataset_name: str,
             ari=metrics.adjusted_rand_score(y_train, y_pred),
         )
 
-    return results
+    flattened_features = dtc.encode(X_train).reshape(X_train.shape[0], -1)
+    projected_features = project_features_to_2d(flattened_features)
+    cluster_df = pd.DataFrame(
+        {
+            "Component 1": projected_features[:, 0],
+            "Component 2": projected_features[:, 1],
+            "Cluster": y_pred.astype(int),
+        }
+    )
+
+    if y_train is not None:
+        cluster_df["Label"] = y_train
+
+    return results, cluster_df
 
 
 def main():
     st.set_page_config(page_title="Deep Temporal Clustering", layout="wide")
     st.title("Deep Temporal Clustering")
     st.write(
-        "Train and evaluate the DTC model on datasets from the UCR/UEA archive. "
+        "Train and evaluate the DTC model on datasets from the UCR/UEA archive or your own time-series CSV uploads. "
         "Tune hyperparameters in the sidebar, then start a run when you are ready."
     )
 
     with st.sidebar:
         st.header("Configuration")
-        dataset_name = st.selectbox("Dataset", sorted(all_ucr_datasets), index=sorted(all_ucr_datasets).index("CBF"))
+        dataset_source = st.radio("Dataset source", ["UCR/UEA archive", "Upload CSV"], index=0)
 
-        # Determine valid pool sizes for the selected dataset (pool_size must divide timesteps)
-        X_sample, _ = load_dataset(dataset_name)
-        timesteps = X_sample.shape[1]
-        valid_pool_sizes = [size for size in range(1, timesteps + 1) if timesteps % size == 0]
-        default_pool_size = 8 if 8 in valid_pool_sizes else max([size for size in valid_pool_sizes if size <= 8], default=min(valid_pool_sizes))
+        dataset_name: str | None = None
+        uploaded_data: Tuple[np.ndarray, np.ndarray | None] | None = None
+        uploaded_filename: str | None = None
+        uploaded_file = None
+
+        if dataset_source == "UCR/UEA archive":
+            dataset_name = st.selectbox("Dataset", sorted(all_ucr_datasets), index=sorted(all_ucr_datasets).index("CBF"))
+            X_sample, y_sample = load_dataset(dataset_name)
+        else:
+            uploaded_file = st.file_uploader("Upload CSV", type=["csv"], help="Rows = samples, columns = time steps/features.")
+            if uploaded_file is not None:
+                uploaded_filename = uploaded_file.name
+                df = load_uploaded_dataframe(uploaded_file.getvalue())
+
+                st.caption("Select which columns to use as time steps/features and optionally choose a label column.")
+                numeric_columns = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
+
+                label_choice = st.selectbox("Label column (optional)", ["<none>"] + numeric_columns)
+                label_column = None if label_choice == "<none>" else label_choice
+
+                feature_choices = [col for col in numeric_columns if col != label_column]
+                feature_columns = st.multiselect(
+                    "Feature/time-step columns", feature_choices, default=feature_choices, help="At least one column required."
+                )
+
+                if feature_columns:
+                    uploaded_data = prepare_uploaded_dataset(df, tuple(feature_columns), label_column)
+                    X_sample, y_sample = uploaded_data
+                else:
+                    st.warning("Select at least one numeric column to use as the time series input.")
+
+        if dataset_source == "UCR/UEA archive" or uploaded_data is not None:
+            timesteps = X_sample.shape[1]
+            valid_pool_sizes = [size for size in range(1, timesteps + 1) if timesteps % size == 0]
+            default_pool_size = 8 if 8 in valid_pool_sizes else max([size for size in valid_pool_sizes if size <= 8], default=min(valid_pool_sizes))
+        else:
+            timesteps = 1
+            valid_pool_sizes = [1]
+            default_pool_size = 1
 
         n_clusters = st.number_input("Clusters (0 = infer from labels)", min_value=0, value=0, step=1)
         n_filters = st.number_input("Conv filters", min_value=1, value=50, step=1)
@@ -165,16 +252,28 @@ def main():
         )
         save_dir = st.text_input("Save directory", value="results/tmp")
 
-        start_training = st.button("Start training", type="primary")
+        start_training = st.button("Start training", type="primary", disabled=(dataset_source == "Upload CSV" and uploaded_data is None))
 
     if start_training:
+        if dataset_source == "UCR/UEA archive":
+            X_train, y_train = load_dataset(dataset_name)
+        else:
+            if uploaded_data is None:
+                st.error("Upload a dataset and select feature columns before starting training.")
+                return
+            X_train, y_train = uploaded_data
+
         if n_clusters == 0:
-            n_clusters_value = None
+            if y_train is None:
+                st.error("Please specify the number of clusters when labels are not provided.")
+                return
+            n_clusters_value = len(np.unique(y_train))
         else:
             n_clusters_value = n_clusters
 
-        results = run_training(
-            dataset_name,
+        results, cluster_df = run_training(
+            X_train,
+            y_train,
             n_clusters_value,
             n_filters,
             kernel_size,
@@ -199,8 +298,27 @@ def main():
             save_dir,
         )
 
+        if dataset_source == "UCR/UEA archive":
+            results["dataset"] = dataset_name
+        else:
+            results["dataset"] = uploaded_filename or "uploaded"
+
         st.subheader("Training results")
         st.json(results)
+
+        st.subheader("Cluster visualization (PCA of latent features)")
+        cluster_chart = (
+            alt.Chart(cluster_df)
+            .mark_circle(size=80)
+            .encode(
+                x=alt.X("Component 1", title="Component 1"),
+                y=alt.Y("Component 2", title="Component 2"),
+                color=alt.Color("Cluster:N", legend=alt.Legend(title="Cluster")),
+                tooltip=list(cluster_df.columns),
+            )
+            .properties(height=400)
+        )
+        st.altair_chart(cluster_chart, use_container_width=True)
     else:
         st.info("Configure the training parameters in the sidebar and click **Start training** to begin.")
 
