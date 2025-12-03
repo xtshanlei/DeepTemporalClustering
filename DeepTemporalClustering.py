@@ -96,9 +96,9 @@ class DTC:
         if self.heatmap:
             n_heatmap_filters = self.n_clusters  # one heatmap (class activation map) per cluster
             encoded = self.encoder.output
-            heatmap_layer = Reshape((-1, 1, self.n_units[1]))(encoded)
-            heatmap_layer = UpSampling2D((self.pool_size, 1))(heatmap_layer)
-            heatmap_layer = Conv2DTranspose(n_heatmap_filters, (self.kernel_size, 1), padding='same')(heatmap_layer)
+            heatmap_layer = Reshape((-1, 1, self.n_units[1]), name='heatmap_reshape')(encoded)
+            heatmap_layer = UpSampling2D((self.pool_size, 1), name='heatmap_upsampling')(heatmap_layer)
+            heatmap_layer = Conv2DTranspose(n_heatmap_filters, (self.kernel_size, 1), padding='same', name='heatmap_deconv')(heatmap_layer)
             # The next one is the heatmap layer we will visualize
             heatmap_layer = Reshape((-1, n_heatmap_filters), name='Heatmap')(heatmap_layer)
             heatmap_output_layer = GlobalAveragePooling1D()(heatmap_layer)
@@ -311,8 +311,9 @@ class DTC:
         t0 = time()
         self.autoencoder.fit(X, X, batch_size=batch_size, epochs=epochs, verbose=verbose)
         print('Pretraining time: ', time() - t0)
-        self.autoencoder.save_weights('{}/ae_weights-epoch{}.h5'.format(save_dir, epochs))
-        print('Pretrained weights are saved to {}/ae_weights-epoch{}.h5'.format(save_dir, epochs))
+        weights_path = '{}/ae_weights-epoch{}.weights.h5'.format(save_dir, epochs)
+        self.autoencoder.save_weights(weights_path)
+        print('Pretrained weights are saved to {}'.format(weights_path))
         self.pretrained = True
 
     def fit(self, X_train, y_train=None,
@@ -434,8 +435,9 @@ class DTC:
 
             # Save intermediate model and plots
             if epoch % save_epochs == 0:
-                self.model.save_weights(save_dir + '/DTC_model_' + str(epoch) + '.h5')
-                print('Saved model to:', save_dir + '/DTC_model_' + str(epoch) + '.h5')
+                weights_path = save_dir + '/DTC_model_' + str(epoch) + '.weights.h5'
+                self.model.save_weights(weights_path)
+                print('Saved model to:', weights_path)
 
             # Train for one epoch
             if self.heatmap:
@@ -446,8 +448,9 @@ class DTC:
 
         # Save the final model
         logfile.close()
-        print('Saving model to:', save_dir + '/DTC_model_final.h5')
-        self.model.save_weights(save_dir + '/DTC_model_final.h5')
+        final_weights_path = save_dir + '/DTC_model_final.weights.h5'
+        print('Saving model to:', final_weights_path)
+        self.model.save_weights(final_weights_path)
 
 
 if __name__ == "__main__":
