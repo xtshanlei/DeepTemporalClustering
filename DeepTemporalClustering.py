@@ -96,9 +96,9 @@ class DTC:
         if self.heatmap:
             n_heatmap_filters = self.n_clusters  # one heatmap (class activation map) per cluster
             encoded = self.encoder.output
-            heatmap_layer = Reshape((-1, 1, self.n_units[1]))(encoded)
-            heatmap_layer = UpSampling2D((self.pool_size, 1))(heatmap_layer)
-            heatmap_layer = Conv2DTranspose(n_heatmap_filters, (self.kernel_size, 1), padding='same')(heatmap_layer)
+            heatmap_layer = Reshape((-1, 1, self.n_units[1]), name='heatmap_reshape')(encoded)
+            heatmap_layer = UpSampling2D((self.pool_size, 1), name='heatmap_upsampling')(heatmap_layer)
+            heatmap_layer = Conv2DTranspose(n_heatmap_filters, (self.kernel_size, 1), padding='same', name='heatmap_deconv')(heatmap_layer)
             # The next one is the heatmap layer we will visualize
             heatmap_layer = Reshape((-1, n_heatmap_filters), name='Heatmap')(heatmap_layer)
             heatmap_output_layer = GlobalAveragePooling1D()(heatmap_layer)
