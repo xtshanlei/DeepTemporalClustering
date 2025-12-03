@@ -6,9 +6,11 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 from DeepTemporalClustering import DTC
 from datasets import all_ucr_datasets, load_data
+from sklearn.decomposition import PCA
 
 
 @st.cache_data(show_spinner=False)
@@ -37,6 +39,22 @@ def prepare_uploaded_dataset(
         y = None
 
     return X, y
+
+
+def project_features_to_2d(flattened_features: np.ndarray) -> np.ndarray:
+    """Project latent features to two dimensions using PCA with safe fallbacks."""
+
+    if flattened_features.shape[0] < 2:
+        padded = np.pad(flattened_features, ((0, 0), (0, max(0, 2 - flattened_features.shape[1]))))
+        return padded[:, :2]
+
+    n_components = min(2, flattened_features.shape[1], flattened_features.shape[0])
+    projected = PCA(n_components=n_components).fit_transform(flattened_features)
+
+    if projected.shape[1] == 1:
+        projected = np.concatenate([projected, np.zeros((projected.shape[0], 1))], axis=1)
+
+    return projected[:, :2]
 
 
 def run_training(X_train: np.ndarray,
@@ -133,7 +151,20 @@ def run_training(X_train: np.ndarray,
             ari=metrics.adjusted_rand_score(y_train, y_pred),
         )
 
-    return results
+    flattened_features = dtc.encode(X_train).reshape(X_train.shape[0], -1)
+    projected_features = project_features_to_2d(flattened_features)
+    cluster_df = pd.DataFrame(
+        {
+            "Component 1": projected_features[:, 0],
+            "Component 2": projected_features[:, 1],
+            "Cluster": y_pred.astype(int),
+        }
+    )
+
+    if y_train is not None:
+        cluster_df["Label"] = y_train
+
+    return results, cluster_df
 
 
 def main():
@@ -240,7 +271,7 @@ def main():
         else:
             n_clusters_value = n_clusters
 
-        results = run_training(
+        results, cluster_df = run_training(
             X_train,
             y_train,
             n_clusters_value,
@@ -274,6 +305,20 @@ def main():
 
         st.subheader("Training results")
         st.json(results)
+
+        st.subheader("Cluster visualization (PCA of latent features)")
+        cluster_chart = (
+            alt.Chart(cluster_df)
+            .mark_circle(size=80)
+            .encode(
+                x=alt.X("Component 1", title="Component 1"),
+                y=alt.Y("Component 2", title="Component 2"),
+                color=alt.Color("Cluster:N", legend=alt.Legend(title="Cluster")),
+                tooltip=list(cluster_df.columns),
+            )
+            .properties(height=400)
+        )
+        st.altair_chart(cluster_chart, use_container_width=True)
     else:
         st.info("Configure the training parameters in the sidebar and click **Start training** to begin.")
 
