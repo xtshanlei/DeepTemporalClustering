@@ -14,7 +14,7 @@ from time import time
 # Keras
 from keras.models import Model
 from keras.layers import Dense, Reshape, UpSampling2D, Conv2DTranspose, GlobalAveragePooling1D, Softmax
-from keras.losses import kullback_leibler_divergence
+from keras.losses import KLDivergence
 import keras.backend as K
 
 # scikit-learn
@@ -130,8 +130,10 @@ class DTC:
         """
         Custom KL-divergence loss with a variable weight parameter
         """
+        kld_loss = KLDivergence()
+
         def loss(y_true, y_pred):
-            return loss_weight * kullback_leibler_divergence(y_true, y_pred)
+            return loss_weight * kld_loss(y_true, y_pred)
         return loss
 
     def on_epoch_end(self, epoch):
