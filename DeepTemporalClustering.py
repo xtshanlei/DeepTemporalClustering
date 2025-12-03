@@ -12,10 +12,10 @@ import argparse
 from time import time
 
 # Keras
+import keras
 from keras.models import Model
 from keras.layers import Dense, Reshape, UpSampling2D, Conv2DTranspose, GlobalAveragePooling1D, Softmax
 from keras.losses import KLDivergence
-import keras.backend as K
 
 # scikit-learn
 from sklearn.cluster import AgglomerativeClustering, KMeans
@@ -141,7 +141,7 @@ class DTC:
         Update heatmap loss weight on epoch end
         """
         if epoch > self.finetune_heatmap_at_epoch:
-            K.set_value(self.heatmap_loss_weight, self.final_heatmap_loss_weight)
+            self.heatmap_loss_weight.assign(self.final_heatmap_loss_weight)
 
     def compile(self, gamma, optimizer, initial_heatmap_loss_weight=None, final_heatmap_loss_weight=None):
         """
@@ -156,7 +156,7 @@ class DTC:
         if self.heatmap:
             self.initial_heatmap_loss_weight = initial_heatmap_loss_weight
             self.final_heatmap_loss_weight = final_heatmap_loss_weight
-            self.heatmap_loss_weight = K.variable(self.initial_heatmap_loss_weight)
+            self.heatmap_loss_weight = keras.Variable(self.initial_heatmap_loss_weight, dtype="float32")
             self.model.compile(loss=['mse', DTC.weighted_kld(1.0 - self.heatmap_loss_weight), DTC.weighted_kld(self.heatmap_loss_weight)],
                                loss_weights=[1.0, gamma, gamma],
                                optimizer=optimizer)
