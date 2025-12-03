@@ -5,11 +5,11 @@ Time Series Clustering layer
 @author Florent Forest (FlorentF9)
 """
 
-from keras.layers import InputSpec, Layer
-import keras.backend as K
+from keras import backend as K
+from keras import layers
 
 
-class TSClusteringLayer(Layer):
+class TSClusteringLayer(layers.Layer):
     """
     Clustering layer converts input sample (feature) to soft label, i.e. a vector that represents the probability of the
     sample belonging to each cluster. The probability is calculated with student's t-distribution.
@@ -33,7 +33,7 @@ class TSClusteringLayer(Layer):
         self.alpha = alpha
         self.dist_metric = dist_metric
         self.initial_weights = weights
-        self.input_spec = InputSpec(ndim=3)
+        self.input_spec = layers.InputSpec(ndim=3)
         self.clusters = None
         self.built = False
 
@@ -41,7 +41,7 @@ class TSClusteringLayer(Layer):
         assert len(input_shape) == 3
         input_dim = input_shape[2]
         input_steps = input_shape[1]
-        self.input_spec = InputSpec(dtype=K.floatx(), shape=(None, input_steps, input_dim))
+        self.input_spec = layers.InputSpec(dtype=K.floatx(), shape=(None, input_steps, input_dim))
         self.clusters = self.add_weight(shape=(self.n_clusters, input_steps, input_dim), initializer='glorot_uniform', name='cluster_centers')
         if self.initial_weights is not None:
             self.set_weights(self.initial_weights)
