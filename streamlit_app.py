@@ -27,8 +27,8 @@ def load_uploaded_dataframe(file_bytes: bytes) -> pd.DataFrame:
 
 def prepare_uploaded_dataset(
     df: pd.DataFrame, feature_columns: Tuple[str, ...], label_column: str | None
-) -> Tuple[np.ndarray, np.ndarray | None]:
-    """Convert a DataFrame into model-ready arrays."""
+) -> Tuple[np.ndarray, np.ndarray | None, list[str] | None]:
+    """Convert a wide-format DataFrame into model-ready arrays."""
 
     feature_values = df.loc[:, feature_columns].to_numpy(dtype=np.float32)
     X = np.expand_dims(feature_values, -1)
@@ -38,7 +38,53 @@ def prepare_uploaded_dataset(
     else:
         y = None
 
-    return X, y
+    sample_ids = df.index.astype(str).tolist()
+
+    return X, y, sample_ids
+
+
+@st.cache_data(show_spinner=False)
+def prepare_panel_dataset(
+    df: pd.DataFrame,
+    entity_column: str,
+    time_column: str,
+    feature_columns: Tuple[str, ...],
+    label_column: str | None,
+) -> Tuple[np.ndarray, np.ndarray | None, list[str]]:
+    """Convert a long-format panel DataFrame into model-ready arrays.
+
+    Assumes each entity has the same number of ordered time steps.
+    """
+
+    ordered_df = df.copy()
+    ordered_df[time_column] = pd.to_datetime(ordered_df[time_column], errors="ignore")
+    ordered_df = ordered_df.sort_values([entity_column, time_column])
+
+    grouped = ordered_df.groupby(entity_column, sort=False)
+    lengths = grouped.size()
+
+    if lengths.nunique() != 1:
+        raise ValueError(
+            "All entities must share the same number of time steps. "
+            "Please filter or pad your data so each entity has an equal timeline."
+        )
+
+    feature_tensors = []
+    labels = []
+    entity_ids: list[str] = []
+
+    for entity, group in grouped:
+        feature_values = group.loc[:, feature_columns].to_numpy(dtype=np.float32)
+        feature_tensors.append(feature_values)
+        entity_ids.append(str(entity))
+
+        if label_column:
+            labels.append(group[label_column].iloc[0])
+
+    X = np.stack(feature_tensors, axis=0)
+    y = np.array(labels) if label_column else None
+
+    return X, y, entity_ids
 
 
 def project_features_to_2d(flattened_features: np.ndarray) -> np.ndarray:
@@ -80,7 +126,8 @@ def run_training(X_train: np.ndarray,
                 finetune_heatmap_at_epoch: int,
                 initial_heatmap_loss_weight: float,
                 final_heatmap_loss_weight: float,
-                save_dir: str):
+                save_dir: str,
+                sample_ids: list[str] | None = None):
     """Train a DTC model with the provided hyperparameters."""
     os.makedirs(save_dir, exist_ok=True)
 
@@ -161,6 +208,9 @@ def run_training(X_train: np.ndarray,
         }
     )
 
+    if sample_ids is not None:
+        cluster_df["Sample"] = sample_ids
+
     if y_train is not None:
         cluster_df["Label"] = y_train
 
@@ -180,7 +230,7 @@ def main():
         dataset_source = st.radio("Dataset source", ["UCR/UEA archive", "Upload CSV"], index=0)
 
         dataset_name: str | None = None
-        uploaded_data: Tuple[np.ndarray, np.ndarray | None] | None = None
+        uploaded_data: Tuple[np.ndarray, np.ndarray | None, list[str] | None] | None = None
         uploaded_filename: str | None = None
         uploaded_file = None
 
@@ -193,22 +243,63 @@ def main():
                 uploaded_filename = uploaded_file.name
                 df = load_uploaded_dataframe(uploaded_file.getvalue())
 
-                st.caption("Select which columns to use as time steps/features and optionally choose a label column.")
-                numeric_columns = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
-
-                label_choice = st.selectbox("Label column (optional)", ["<none>"] + numeric_columns)
-                label_column = None if label_choice == "<none>" else label_choice
-
-                feature_choices = [col for col in numeric_columns if col != label_column]
-                feature_columns = st.multiselect(
-                    "Feature/time-step columns", feature_choices, default=feature_choices, help="At least one column required."
+                data_layout = st.radio(
+                    "Data layout",
+                    ["Wide (rows are samples)", "Panel/long (entity, time columns)"],
+                    index=0,
+                    help="Choose 'Panel/long' if your file has multiple entities observed over time.",
                 )
 
-                if feature_columns:
-                    uploaded_data = prepare_uploaded_dataset(df, tuple(feature_columns), label_column)
-                    X_sample, y_sample = uploaded_data
+                st.caption("Select which columns to use and optionally choose a label column.")
+                numeric_columns = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
+
+                if data_layout == "Wide (rows are samples)":
+                    label_choice = st.selectbox("Label column (optional)", ["<none>"] + numeric_columns)
+                    label_column = None if label_choice == "<none>" else label_choice
+
+                    feature_choices = [col for col in numeric_columns if col != label_column]
+                    feature_columns = st.multiselect(
+                        "Feature/time-step columns",
+                        feature_choices,
+                        default=feature_choices,
+                        help="At least one column required.",
+                    )
+
+                    if feature_columns:
+                        uploaded_data = prepare_uploaded_dataset(df, tuple(feature_columns), label_column)
+                        X_sample, y_sample, _ = uploaded_data
+                    else:
+                        st.warning("Select at least one numeric column to use as the time series input.")
                 else:
-                    st.warning("Select at least one numeric column to use as the time series input.")
+                    entity_column = st.selectbox("Entity column", df.columns)
+                    time_column = st.selectbox("Time column", df.columns)
+
+                    label_options = ["<none>"] + [col for col in df.columns if col not in (entity_column, time_column)]
+                    label_choice = st.selectbox("Label column (optional)", label_options)
+                    label_column = None if label_choice == "<none>" else label_choice
+
+                    feature_choices = [
+                        col
+                        for col in numeric_columns
+                        if col not in {entity_column, time_column} and col != label_column
+                    ]
+                    feature_columns = st.multiselect(
+                        "Feature/time-step columns",
+                        feature_choices,
+                        default=feature_choices,
+                        help="Must be numeric and shared across entities.",
+                    )
+
+                    if feature_columns:
+                        try:
+                            uploaded_data = prepare_panel_dataset(
+                                df, entity_column, time_column, tuple(feature_columns), label_column
+                            )
+                            X_sample, y_sample, _ = uploaded_data
+                        except ValueError as exc:
+                            st.error(str(exc))
+                    else:
+                        st.warning("Select at least one numeric feature column to build each entity's timeline.")
 
         if dataset_source == "UCR/UEA archive" or uploaded_data is not None:
             timesteps = X_sample.shape[1]
@@ -257,11 +348,12 @@ def main():
     if start_training:
         if dataset_source == "UCR/UEA archive":
             X_train, y_train = load_dataset(dataset_name)
+            sample_ids = None
         else:
             if uploaded_data is None:
                 st.error("Upload a dataset and select feature columns before starting training.")
                 return
-            X_train, y_train = uploaded_data
+            X_train, y_train, sample_ids = uploaded_data
 
         if n_clusters == 0:
             if y_train is None:
@@ -296,6 +388,7 @@ def main():
             initial_heatmap_loss_weight,
             final_heatmap_loss_weight,
             save_dir,
+            sample_ids,
         )
 
         if dataset_source == "UCR/UEA archive":
