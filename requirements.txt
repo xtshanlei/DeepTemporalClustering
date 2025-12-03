@@ -6,3 +6,5 @@ scipy
 statsmodels
 tslearn>=0.3.1
 streamlit
+pandas
+altair
